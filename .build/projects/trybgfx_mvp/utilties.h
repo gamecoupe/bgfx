@@ -19,7 +19,7 @@
 #define DBG(_format, ...) bx::debugPrintf(DBG_FILE_LINE_LITERAL "" _format "\n", ##__VA_ARGS__)
 
 
-#define MAX_JOINTS	96
+#define MAX_JOINTS	200
 
 struct Primitive
 {

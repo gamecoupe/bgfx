@@ -580,7 +580,7 @@ namespace trybgfx
 
 	// --------------------------
 	TAnimator::TAnimator(TMesh* _mesh)
-		:m_mesh(_mesh), m_currentTime(0.0f), m_playing(false)
+		:m_mesh(_mesh), m_currentTime(0.0f), m_playing(false), m_currentIdx(0)
 	{
 		//m_isPlayingUh.idx = bgfx::kInvalidHandle;
 		m_isPlayingUh = bgfx::createUniform("u_flgs", bgfx::UniformType::Vec4, 1);
@@ -602,13 +602,36 @@ namespace trybgfx
 		bgfx::setUniform(m_isPlayingUh, flgs, 1);
 	}
 
-	void TAnimator::play(uint32_t idx)
+	void TAnimator::play(int32_t _idx)
 	{
-		BX_ASSERT(idx < m_mesh->m_animations.size(), "Invalid animtion index");
-		m_currentAnimation = &(m_mesh->m_animations[idx]);
+		//BX_ASSERT(idx < m_mesh->m_animations.size(), "Invalid animtion index");
+		if (_idx < 0)
+		{
+			m_currentIdx = 0;
+		}
+		else if (_idx >= m_mesh->m_animations.size())
+		{
+			m_currentIdx = m_mesh->m_animations.size() - 1;
+		}
+		else
+		{
+			m_currentIdx = _idx;
+		}
+
+		m_currentAnimation = &(m_mesh->m_animations[m_currentIdx]);
 
 		m_currentTime = 0.0f;
 		m_playing = true;
+	}
+
+	void TAnimator::playNext()
+	{
+		play(++m_currentIdx);
+	}
+
+	void TAnimator::playPre()
+	{
+		play(--m_currentIdx);
 	}
 
 	void TAnimator::stop()
@@ -955,16 +978,16 @@ namespace trybgfx
 
 			bgfx::submit(_id, _pg, 0, BGFX_DISCARD_INDEX_BUFFER | BGFX_DISCARD_VERTEX_STREAMS);
 
-			if (_dde != NULL)
-			{
-				_dde->push();
-				_dde->setWireframe(true);
+			//if (_dde != NULL)
+			//{
+			//	_dde->push();
+			//	_dde->setWireframe(true);
 
-				_dde->setTransform(_mtx);
-				_dde->setColor(0xff0000ff);
-				_dde->draw(group.m_aabb);
-				_dde->pop();
-			}
+			//	_dde->setTransform(_mtx);
+			//	_dde->setColor(0xff0000ff);
+			//	_dde->draw(group.m_aabb);
+			//	_dde->pop();
+			//}
 		}
 
 		bgfx::discard();

@@ -49,7 +49,8 @@ void DXSample::OnInit(HWND hwnd)
 	//m_pgh = loadShaderProgram("simple/build_d3d/vs_charactor", "simple/build_d3d/fs_charactor");
 	m_pgh = loadShaderProgram("charactor/build_d3d/vs_charactor", "charactor/build_d3d/fs_charactor");
 
-	m_testMesh = trybgfx::loadGltf("assets/meshes/tom/scene.gltf");
+	m_testMesh = trybgfx::loadGltf("assets/meshes/sonic/scene.gltf");
+	//m_testMesh = trybgfx::loadGltf("assets/meshes/tom/scene.gltf");
 	//m_testMesh = trybgfx::loadGltf("assets/meshes/orc/section 9 rendering b.gltf");
 	//m_testMesh = trybgfx::loadGltf("assets/meshes/fox/fox.gltf");
 	//m_testMesh = trybgfx::loadGltf("assets/meshes/fighting_girl/scene.gltf");
@@ -58,6 +59,7 @@ void DXSample::OnInit(HWND hwnd)
 
 	m_animator = new trybgfx::TAnimator(m_testMesh);
 	//m_animator->play(0);
+	m_animator->play(8);
 
 	m_timeOffset = bx::getHPCounter();
 	m_timeTotal = m_timeOffset;
@@ -87,15 +89,18 @@ void DXSample::OnUpdate()
 	float mtx[16];
 	//bx::mtxRotateXY(mtx, 0.0f, time * 0.5f * bx::kPi);
 	float time2 = (float)((bx::getHPCounter() - m_timeTotal) / double(bx::getHPFrequency()));
-	bx::mtxRotateXY(mtx, 0.0f, time2 * 0.5f * bx::kPi);
-	//bx::mtxRotateXY(mtx, -0.5f * bx::kPi, time2 * 0.5f * bx::kPi);
+	//bx::mtxRotateXY(mtx, 0.0f, 0.0f);
+	//bx::mtxRotateXY(mtx, 0.0f, time2 * 0.5f * bx::kPi);
+	bx::mtxRotateXY(mtx, 0.5f * bx::kPi, time2 * 0.5f * bx::kPi);
 	//bx::mtxRotateXY(mtx, 0.5f * bx::kPi, time2 * 0.5f * bx::kPi);
 
 	// model matrix
 	float mtx2[16];
 	//bx::mtxRotateXY(mtx, 0.0f, time * 0.5f * bx::kPi);
-	bx::mtxScale(mtx2, 0.1f);
+	//bx::mtxScale(mtx2, 0.1f);
 	//bx::mtxScale(mtx2, 1.0f);
+	bx::mtxScale(mtx2, 0.05f);
+
 
 	float finalMtx[16];
 	bx::mtxMul(finalMtx, mtx2, mtx);
@@ -107,7 +112,6 @@ void DXSample::OnUpdate()
 	//m_animator->update(0.0f);
 	m_testMesh->submit(0, m_pgh, finalMtx, BGFX_STATE_MASK, &dde);
 	//m_testMesh->submit(0, m_pgh, finalMtx, BGFX_STATE_MASK);
-
 
 	dde.drawAxis(0.0f, 0.0f, 0.0f);
 
@@ -184,16 +188,12 @@ void DXSample::OnKeyUp(uint8_t key)
 		m_animator->stop();
 	}
 
-	if (key == '1')
+	if (key == 'P')
 	{
-		m_animator->play(0);
+		m_animator->playPre();
 	}
-	else if (key == '2')
+	else if (key == 'N')
 	{
-		m_animator->play(1);
-	}
-	else if (key == '3')
-	{
-		m_animator->play(2);
+		m_animator->playNext();
 	}
 }

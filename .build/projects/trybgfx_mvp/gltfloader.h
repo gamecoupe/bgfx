@@ -162,7 +162,9 @@ namespace trybgfx
 		TAnimator(TMesh* _mesh);
 
 		void update(float _dt);
-		void play(uint32_t idx);
+		void play(int32_t _idx);
+		void playNext();
+		void playPre();
 		void stop();
 
 		void step(float _dt);
@@ -173,6 +175,8 @@ namespace trybgfx
 
 		TMesh* m_mesh;
 		TAnimation* m_currentAnimation;
+
+		int32_t m_currentIdx;
 
 		bgfx::UniformHandle m_isPlayingUh;
 	};
