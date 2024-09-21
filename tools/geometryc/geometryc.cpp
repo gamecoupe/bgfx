@@ -12,6 +12,7 @@
 #include <tinystl/allocator.h>
 #include <tinystl/string.h>
 #include <tinystl/vector.h>
+#include <tinystl/unordered_map.h>
 namespace stl = tinystl;
 
 #include <meshoptimizer/src/meshoptimizer.h>
@@ -64,6 +65,8 @@ struct Index3
 	int32_t m_position;
 	int32_t m_texcoord;
 	int32_t m_normal;
+	int32_t m_joint;
+	int32_t m_weight;
 	int32_t m_vbc; // Barycentric ID. Holds either 0, 1 or 2.
 };
 
@@ -139,15 +142,106 @@ static const CoordinateSystemMapping s_coordinateSystemMappings[] =
 	{ "rh-up+z", { bx::Handedness::Right, Axis::PositiveZ, Axis::PositiveY } },
 };
 
+struct IVec4
+{
+	uint8_t m_j0;
+	uint8_t m_j1;
+	uint8_t m_j2;
+	uint8_t m_j3;
+};
+
+typedef stl::vector<IVec4> IVec4Array;
+
+struct Vec4
+{
+	float m_w0;
+	float m_w1;
+	float m_w2;
+	float m_w3;
+};
+
+typedef stl::vector<Vec4> Vec4Array;
+
+struct Mtx4
+{
+	float m_m[16];
+};
+
+typedef stl::vector<Mtx4> Mtx4Array;
+
+struct Joint
+{
+	uint32_t m_parentIdx;
+	uint32_t has_tranlation;
+	uint32_t has_scale;
+	uint32_t has_rotate;
+
+	float m_tranlation[4];
+	float m_scale[4];
+	float m_rotate[4];
+};
+
+typedef stl::vector<Joint> JointArray;
+
+struct SkinSkeleton
+{
+	Mtx4Array m_inverseBindMatrixForJoint;
+
+	JointArray m_joints;
+};
+
+typedef stl::vector<float> floatArray;
+
+struct Channel
+{
+	enum Type
+	{
+		Translation,
+		Scale,
+		Rotation,
+	};
+
+	uint32_t m_startKey;
+	uint32_t m_numKeys;
+
+	uint32_t m_startValue;
+	uint32_t m_numValues;
+
+	uint32_t m_strike;
+
+	uint32_t m_type;
+
+	uint32_t m_targetJointIdx;
+};
+
+typedef stl::vector<Channel> ChannelArray;
+
+struct Animation
+{
+	floatArray m_keyframes;
+	floatArray m_values;
+
+	ChannelArray m_channels;
+
+	float m_maxKeyFrame;
+};
+
 struct Mesh
 {
 	Vec3Array     m_positions;
 	Vec3Array     m_normals;
 	Vec3Array     m_texcoords;
+	IVec4Array	  m_joints;
+	Vec4Array	  m_weights;
+
 	TriangleArray m_triangles;
 	GroupArray    m_groups;
 
 	CoordinateSystem m_coordinateSystem;
+
+	SkinSkeleton m_skinSkeleton;
+
+	Animation m_animation;
 };
 
 static uint32_t s_obbSteps = 17;
@@ -157,6 +251,10 @@ constexpr uint32_t kChunkVertexBufferCompressed = BX_MAKEFOURCC('V', 'B', 'C', 0
 constexpr uint32_t kChunkIndexBuffer            = BX_MAKEFOURCC('I', 'B', ' ', 0x0);
 constexpr uint32_t kChunkIndexBufferCompressed  = BX_MAKEFOURCC('I', 'B', 'C', 0x1);
 constexpr uint32_t kChunkPrimitive              = BX_MAKEFOURCC('P', 'R', 'I', 0x0);
+
+constexpr uint32_t kChunkJointBuffer = BX_MAKEFOURCC('J', 'B', ' ', 0x0);
+constexpr uint32_t kChunkAnimationBuffer = BX_MAKEFOURCC('A', 'B', ' ', 0x0);
+
 
 void optimizeVertexCache(uint16_t* _indices, uint32_t _numIndices, uint32_t _numVertices)
 {
@@ -733,7 +831,26 @@ void gltfReadFloat(const float* _accessorData, cgltf_size _accessorNumComponents
 	}
 }
 
-void processGltfNode(cgltf_node* _node, Mesh* _mesh, Group* _group, bool _hasBc)
+typedef stl::unordered_map<uint32_t, uint32_t> NodeJointIdxMap;
+
+
+void buildSkeleton(cgltf_node* _joint, uint8_t _parentIdx, cgltf_data* _data,
+	NodeJointIdxMap& _nodeJointIdxMap, JointArray& _jointArray)
+{
+	uint32_t nodeIdx = (int32_t)cgltf_node_index(_data, _joint);
+
+	NodeJointIdxMap::iterator it = _nodeJointIdxMap.find(nodeIdx);
+	BX_ASSERT(it != _nodeJointIdxMap.end(), "Invalid pathType");
+	uint32_t idx = it->second;
+	_jointArray[idx].m_parentIdx = _parentIdx;
+
+	for (cgltf_size childIndex = 0; childIndex < _joint->children_count; ++childIndex)
+	{
+		buildSkeleton(_joint->children[childIndex], (uint8_t)idx, _data, _nodeJointIdxMap, _jointArray);
+	}
+}
+
+void processGltfNode(cgltf_node* _node, Mesh* _mesh, Group* _group, bool _hasBc, cgltf_data* _data, NodeJointIdxMap* _nodeJointIdxMap)
 {
 	cgltf_mesh* mesh = _node->mesh;
 	if (NULL != mesh)
@@ -752,9 +869,13 @@ void processGltfNode(cgltf_node* _node, Mesh* _mesh, Group* _group, bool _hasBc)
 			int32_t basePositionIndex = (int32_t)_mesh->m_positions.size();
 			int32_t baseNormalIndex   = (int32_t)_mesh->m_normals.size();
 			int32_t baseTexcoordIndex = (int32_t)_mesh->m_texcoords.size();
+			int32_t baseJointIndex	  = (int32_t)_mesh->m_joints.size();
+			int32_t baseWeightIndex = (int32_t)_mesh->m_weights.size();
 
 			bool hasNormal   = false;
 			bool hasTexcoord = false;
+			bool hasJoint = false;
+			bool hasWeight = false;
 
 			for (cgltf_size attributeIndex = 0; attributeIndex < primitive->attributes_count; ++attributeIndex)
 			{
@@ -764,54 +885,106 @@ void processGltfNode(cgltf_node* _node, Mesh* _mesh, Group* _group, bool _hasBc)
 
 				BX_ASSERT(numVertex == accessorCount, "Invalid attribute count");
 
-				cgltf_size floatCount = cgltf_accessor_unpack_floats(accessor, NULL, 0);
-				float* accessorData = (float*)malloc(floatCount * sizeof(float) );
-				cgltf_accessor_unpack_floats(accessor, accessorData, floatCount);
-
-				cgltf_size numComponents = cgltf_num_components(accessor->type);
-
-				if (attribute->type == cgltf_attribute_type_position && attribute->index == 0)
+				switch (accessor->component_type)
 				{
-					_mesh->m_positions.reserve(_mesh->m_positions.size() + accessorCount);
-
-					bx::Vec3 pos(bx::InitNone);
-
-					for (cgltf_size v = 0; v < accessorCount; ++v)
+					case cgltf_component_type_r_32f:
 					{
-						gltfReadFloat(accessorData, numComponents, v, &pos.x, 3);
-						pos = mul(pos, nodeToWorld);
-						_mesh->m_positions.push_back(pos);
+						// POSITION, NORMAL, TEXCOORD, WEIGHT, ....
+
+						cgltf_size floatCount = cgltf_accessor_unpack_floats(accessor, NULL, 0);
+						float* accessorData = (float*)malloc(floatCount * sizeof(float));
+						cgltf_accessor_unpack_floats(accessor, accessorData, floatCount);
+
+						cgltf_size numComponents = cgltf_num_components(accessor->type);
+
+						if (attribute->type == cgltf_attribute_type_position && attribute->index == 0)
+						{
+							_mesh->m_positions.reserve(_mesh->m_positions.size() + accessorCount);
+
+							bx::Vec3 pos(bx::InitNone);
+
+							for (cgltf_size v = 0; v < accessorCount; ++v)
+							{
+								gltfReadFloat(accessorData, numComponents, v, &pos.x, 3);
+								//pos = mul(pos, nodeToWorld);
+								_mesh->m_positions.push_back(pos);
+							}
+						}
+						else if (attribute->type == cgltf_attribute_type_normal && attribute->index == 0)
+						{
+							_mesh->m_normals.reserve(_mesh->m_normals.size() + accessorCount);
+
+							hasNormal = true;
+							bx::Vec3 normal(bx::InitNone);
+
+							for (cgltf_size v = 0; v < accessorCount; ++v)
+							{
+								gltfReadFloat(accessorData, numComponents, v, &normal.x, 3);
+								normal = mul(normal, nodeToWorldNormal);
+								_mesh->m_normals.push_back(normal);
+							}
+						}
+						else if (attribute->type == cgltf_attribute_type_texcoord && attribute->index == 0)
+						{
+							_mesh->m_texcoords.reserve(_mesh->m_texcoords.size() + accessorCount);
+
+							hasTexcoord = true;
+							bx::Vec3 texcoord(bx::InitNone);
+
+							for (cgltf_size v = 0; v < accessorCount; ++v)
+							{
+								gltfReadFloat(accessorData, numComponents, v, &texcoord.x, 3);
+								_mesh->m_texcoords.push_back(texcoord);
+							}
+						}
+						else if (attribute->type == cgltf_attribute_type_weights && attribute->index == 0)
+						{
+							hasWeight = true;
+							Vec4 weight;
+
+							for (cgltf_size v = 0; v < accessorCount; ++v)
+							{
+								gltfReadFloat(accessorData, numComponents, v, &weight.m_w0, 4);
+								_mesh->m_weights.push_back(weight);
+							}
+						}
+
+						free(accessorData);
 					}
-				}
-				else if (attribute->type == cgltf_attribute_type_normal && attribute->index == 0)
-				{
-					_mesh->m_normals.reserve(_mesh->m_normals.size() + accessorCount);
+					break;
 
-					hasNormal = true;
-					bx::Vec3 normal(bx::InitNone);
-
-					for (cgltf_size v = 0; v < accessorCount; ++v)
+					case cgltf_component_type_r_16u:
 					{
-						gltfReadFloat(accessorData, numComponents, v, &normal.x, 3);
-						normal = mul(normal, nodeToWorldNormal);
-						_mesh->m_normals.push_back(normal);
+						// JOINT, ...
+						cgltf_size floatCount = cgltf_accessor_unpack_floats(accessor, NULL, 0);
+						float* accessorData = (float*)malloc(floatCount * sizeof(float));
+						cgltf_accessor_unpack_floats(accessor, accessorData, floatCount);
+
+						cgltf_size numComponents = cgltf_num_components(accessor->type);
+
+						if (attribute->type == cgltf_attribute_type_joints && attribute->index == 0)
+						{
+							hasJoint = true;
+
+							for (size_t i = 0; i < accessorCount; i++)
+							{
+								float tmp[4];
+								gltfReadFloat(accessorData, numComponents, i, tmp, 4);
+
+								IVec4 joint;
+								joint.m_j0 = (uint8_t)tmp[0];
+								joint.m_j1 = (uint8_t)tmp[1];
+								joint.m_j2 = (uint8_t)tmp[2];
+								joint.m_j3 = (uint8_t)tmp[3];
+								_mesh->m_joints.push_back(joint);
+							}
+						}
 					}
+					break;
+
+					default:
+						break;
 				}
-				else if (attribute->type == cgltf_attribute_type_texcoord && attribute->index == 0)
-				{
-					_mesh->m_texcoords.reserve(_mesh->m_texcoords.size() + accessorCount);
-
-					hasTexcoord = true;
-					bx::Vec3 texcoord(bx::InitNone);
-
-					for (cgltf_size v = 0; v < accessorCount; ++v)
-					{
-						gltfReadFloat(accessorData, numComponents, v, &texcoord.x, 3);
-						_mesh->m_texcoords.push_back(texcoord);
-					}
-				}
-
-				free(accessorData);
 			}
 
 			if (primitive->indices != NULL)
@@ -828,6 +1001,8 @@ void processGltfNode(cgltf_node* _node, Mesh* _mesh, Group* _group, bool _hasBc)
 						index.m_position = basePositionIndex + vertexIndex;
 						index.m_normal   = hasNormal   ? baseNormalIndex   + vertexIndex : -1;
 						index.m_texcoord = hasTexcoord ? baseTexcoordIndex + vertexIndex : -1;
+						index.m_joint = hasJoint ? baseJointIndex + vertexIndex : -1;
+						index.m_weight = hasWeight ? baseWeightIndex + vertexIndex : -1;
 						index.m_vbc      = _hasBc      ? i                               :  0;
 						triangle.m_index[i] = index;
 					}
@@ -842,14 +1017,30 @@ void processGltfNode(cgltf_node* _node, Mesh* _mesh, Group* _group, bool _hasBc)
 					for (int i = 0; i < 3; ++i)
 					{
 						Index3 index;
-						int32_t vertexIndex = int32_t(v * 3 + i);
+						//int32_t vertexIndex = int32_t(v * 3 + i);
+						int32_t vertexIndex = int32_t(v + i);
 						index.m_position = basePositionIndex + vertexIndex;
 						index.m_normal   = hasNormal   ? baseNormalIndex   + vertexIndex : -1;
 						index.m_texcoord = hasTexcoord ? baseTexcoordIndex + vertexIndex : -1;
+						index.m_joint = hasJoint ? baseJointIndex + vertexIndex : -1;
+						index.m_weight = hasWeight ? baseWeightIndex + vertexIndex : -1;
 						index.m_vbc      = _hasBc      ? i                               :  0;
 						triangle.m_index[i] = index;
 					}
 					_mesh->m_triangles.push_back(triangle);
+				}
+			}
+
+			// Now only process PBR metallic material
+			if (primitive->material != NULL && primitive->material->has_pbr_metallic_roughness)
+			{
+				cgltf_pbr_metallic_roughness& pbrMetallicRoughness =
+					primitive->material->pbr_metallic_roughness;
+
+				cgltf_texture* texture = pbrMetallicRoughness.base_color_texture.texture;
+				if(texture != NULL)
+				{
+					_group->m_material = pbrMetallicRoughness.base_color_texture.texture->image->uri;
 				}
 			}
 
@@ -860,15 +1051,154 @@ void processGltfNode(cgltf_node* _node, Mesh* _mesh, Group* _group, bool _hasBc)
 				_mesh->m_groups.push_back(*_group);
 				_group->m_startTriangle = (uint32_t)(_mesh->m_triangles.size() );
 				_group->m_numTriangles = 0;
+				_group->m_material = "";
 			}
 		}
 	}
 
+	cgltf_skin* skin = _node->skin;
+	if (NULL != skin)
+	{
+		cgltf_accessor* accessor = skin->inverse_bind_matrices;
+		cgltf_size accessorCount = accessor->count;
+		cgltf_size numJoint = skin->joints_count;
+
+		BX_ASSERT(numJoint == accessorCount, "Invalid joint count");
+
+		cgltf_size floatCount = cgltf_accessor_unpack_floats(accessor, NULL, 0);
+		float* accessorData = (float*)malloc(floatCount * sizeof(float));
+		cgltf_accessor_unpack_floats(accessor, accessorData, floatCount);
+
+		cgltf_size numComponents = cgltf_num_components(accessor->type);
+
+		for (cgltf_size v = 0; v < accessorCount; ++v)
+		{
+			Mtx4 inverseBindMatrix;
+			gltfReadFloat(accessorData, numComponents, v, &inverseBindMatrix.m_m[0], 16);
+			_mesh->m_skinSkeleton.m_inverseBindMatrixForJoint.push_back(inverseBindMatrix);
+
+			cgltf_node* node = skin->joints[v];
+			uint32_t nodeIdx = (uint32_t)cgltf_node_index(_data, node);
+			_nodeJointIdxMap->insert(tinystl::make_pair(nodeIdx, (uint32_t)v));
+
+			Joint jointData;
+			if (node->has_rotation)
+			{
+				jointData.has_rotate = 1;
+				jointData.m_rotate[0] = node->rotation[0];
+				jointData.m_rotate[1] = node->rotation[1];
+				jointData.m_rotate[2] = node->rotation[2];
+				jointData.m_rotate[3] = node->rotation[3];
+
+			}
+			else
+			{
+				jointData.has_rotate = 0;
+			}
+
+			if (node->has_translation)
+			{
+				jointData.has_tranlation = 1;
+				jointData.m_tranlation[0] = node->translation[0];
+				jointData.m_tranlation[1] = node->translation[1];
+				jointData.m_tranlation[2] = node->translation[2];
+				jointData.m_tranlation[3] = 0.0f;
+			}
+			else
+			{
+				jointData.has_tranlation = 0;
+			}
+
+			if (node->has_scale)
+			{
+				jointData.has_scale = 1;
+				jointData.m_scale[0] = node->scale[0];
+				jointData.m_scale[1] = node->scale[1];
+				jointData.m_scale[2] = node->scale[2];
+				jointData.m_scale[3] = 0.0f;
+			}
+			else
+			{
+				jointData.has_scale = 0;
+			}
+
+			_mesh->m_skinSkeleton.m_joints.push_back(jointData);
+		}
+
+		cgltf_node* rootJoint;
+		if (skin->skeleton != NULL)
+		{
+			//rootJoint = skin->skeleton;
+
+			rootJoint = skin->joints[0];
+
+			//uint32_t nodeIdx = (int32_t)cgltf_node_index(_data, rootJoint);
+
+			//NodeJointIdxMap::iterator it = _nodeJointIdxMap->find(nodeIdx);
+			//if (it == _nodeJointIdxMap->end())
+			//{
+			//	_nodeJointIdxMap->insert(tinystl::make_pair(nodeIdx, (uint32_t)_nodeJointIdxMap->size()));
+
+			//	Joint jointData;
+			//	if (rootJoint->has_rotation)
+			//	{
+			//		jointData.has_rotate = 1;
+			//		jointData.m_rotate[0] = rootJoint->rotation[0];
+			//		jointData.m_rotate[1] = rootJoint->rotation[1];
+			//		jointData.m_rotate[2] = rootJoint->rotation[2];
+			//		jointData.m_rotate[3] = rootJoint->rotation[3];
+
+			//	}
+			//	else
+			//	{
+			//		jointData.has_rotate = 0;
+			//	}
+
+			//	if (rootJoint->has_translation)
+			//	{
+			//		jointData.has_tranlation = 1;
+			//		jointData.m_tranlation[0] = rootJoint->translation[0];
+			//		jointData.m_tranlation[1] = rootJoint->translation[1];
+			//		jointData.m_tranlation[2] = rootJoint->translation[2];
+			//		jointData.m_tranlation[3] = 0.0f;
+			//	}
+			//	else
+			//	{
+			//		jointData.has_tranlation = 0;
+			//	}
+
+			//	if (rootJoint->has_scale)
+			//	{
+			//		jointData.has_scale = 1;
+			//		jointData.m_scale[0] = rootJoint->scale[0];
+			//		jointData.m_scale[1] = rootJoint->scale[1];
+			//		jointData.m_scale[2] = rootJoint->scale[2];
+			//		jointData.m_scale[3] = 0.0f;
+			//	}
+			//	else
+			//	{
+			//		jointData.has_scale = 0;
+			//	}
+
+			//	_mesh->m_skinSkeleton.m_joints.push_back(jointData);
+			//}
+		}
+		else
+		{
+			rootJoint = skin->joints[0];
+		}
+
+		buildSkeleton(rootJoint, UINT8_MAX, _data, *_nodeJointIdxMap, _mesh->m_skinSkeleton.m_joints);
+
+		free(accessorData);
+	}
+
 	for (cgltf_size childIndex = 0; childIndex < _node->children_count; ++childIndex)
 	{
-		processGltfNode(_node->children[childIndex], _mesh, _group, _hasBc);
+		processGltfNode(_node->children[childIndex], _mesh, _group, _hasBc, _data, _nodeJointIdxMap);
 	}
 }
+
 
 void parseGltf(char* _data, uint32_t _size, Mesh* _mesh, bool _hasBc, const bx::StringView& _path)
 {
@@ -879,6 +1209,8 @@ void parseGltf(char* _data, uint32_t _size, Mesh* _mesh, bool _hasBc, const bx::
 	_mesh->m_coordinateSystem.m_handedness = bx::Handedness::Right;
 	_mesh->m_coordinateSystem.m_forward  = Axis::PositiveZ;
 	_mesh->m_coordinateSystem.m_up       = Axis::PositiveY;
+
+	NodeJointIdxMap nodeJointIdxMap;
 
 	Group group;
 	group.m_startTriangle = 0;
@@ -898,6 +1230,7 @@ void parseGltf(char* _data, uint32_t _size, Mesh* _mesh, bool _hasBc, const bx::
 
 		if (result == cgltf_result_success)
 		{
+			// mesh
 			for (cgltf_size sceneIndex = 0; sceneIndex < data->scenes_count; ++sceneIndex)
 			{
 				cgltf_scene* scene = &data->scenes[sceneIndex];
@@ -906,8 +1239,113 @@ void parseGltf(char* _data, uint32_t _size, Mesh* _mesh, bool _hasBc, const bx::
 				{
 					cgltf_node* node = scene->nodes[nodeIndex];
 
-					processGltfNode(node, _mesh, &group, _hasBc);
+					processGltfNode(node, _mesh, &group, _hasBc, data, &nodeJointIdxMap);
 				}
+			}
+
+			// animation
+			for (cgltf_size animationIndex = 0; animationIndex < data->animations_count; ++animationIndex)
+			{
+				//if (animationIndex != 1)
+				//{
+				//	continue;
+				//}
+
+				cgltf_animation* animation = &data->animations[animationIndex];
+
+				_mesh->m_animation.m_channels.reserve(animation->channels_count);
+				_mesh->m_animation.m_maxKeyFrame = 0.0f;
+
+				for (cgltf_size channelIdx = 0; channelIdx < animation->channels_count; ++channelIdx)
+				{
+					cgltf_animation_channel channelNode = animation->channels[channelIdx];
+
+					Channel channel;
+					cgltf_node* node = channelNode.target_node;
+					uint32_t nodeIdx = (int32_t)cgltf_node_index(data, node);
+
+					NodeJointIdxMap::iterator it = nodeJointIdxMap.find(nodeIdx);
+					//BX_ASSERT(it != nodeJointIdxMap.end(), "Invalid pathType");
+					if (it != nodeJointIdxMap.end())
+					{
+						channel.m_targetJointIdx = it->second;
+					}
+					else
+					{
+						continue;
+					}
+
+					{
+						cgltf_accessor* accessor = channelNode.sampler->input;
+						cgltf_size floatCount = cgltf_accessor_unpack_floats(accessor, NULL, 0);
+						float* accessorData = (float*)malloc(floatCount * sizeof(float));
+						cgltf_accessor_unpack_floats(accessor, accessorData, floatCount);
+
+						if (accessor->has_max && accessor->max[0] > _mesh->m_animation.m_maxKeyFrame)
+						{
+							_mesh->m_animation.m_maxKeyFrame = accessor->max[0];
+						}
+
+						channel.m_startKey = (uint32_t)_mesh->m_animation.m_keyframes.size();
+						channel.m_numKeys = (uint32_t)floatCount;
+
+						for (size_t i = 0; i < floatCount; i++)
+						{
+							_mesh->m_animation.m_keyframes.push_back(accessorData[i]);
+						}
+						free(accessorData);
+					}
+
+					cgltf_animation_path_type pathType = channelNode.target_path;
+					switch (pathType)
+					{
+						case cgltf_animation_path_type_translation:
+						{
+							channel.m_type = (uint32_t)Channel::Type::Translation;
+							channel.m_strike = 3;
+						}
+						break;
+
+						case cgltf_animation_path_type_rotation:
+						{
+							channel.m_type = (uint32_t)Channel::Type::Rotation;
+							channel.m_strike = 4;
+						}
+						break;
+
+						case cgltf_animation_path_type_scale:
+						{
+							channel.m_type = (uint32_t)Channel::Type::Scale;
+							channel.m_strike = 3;
+						}
+						break;
+
+						default:
+							BX_ASSERT(false, "Invalid pathType");
+							break;
+					}
+
+					{
+						cgltf_accessor* accessor = channelNode.sampler->output;
+						cgltf_size floatCount = cgltf_accessor_unpack_floats(accessor, NULL, 0);
+						float* accessorData = (float*)malloc(floatCount * sizeof(float));
+						cgltf_accessor_unpack_floats(accessor, accessorData, floatCount);
+
+						channel.m_startValue = (uint32_t)_mesh->m_animation.m_values.size();
+						channel.m_numValues = (uint32_t)floatCount;
+
+						for (size_t i = 0; i < floatCount; i++)
+						{
+							_mesh->m_animation.m_values.push_back(accessorData[i]);
+						}
+						free(accessorData);
+					}
+
+					_mesh->m_animation.m_channels.push_back(channel);
+				}
+
+				// can process only one animation
+				break;
 			}
 		}
 
@@ -1109,7 +1547,7 @@ int main(int _argc, const char* _argv[])
 
 		if (mtxDeterminant(transform) < 0.0f )
 		{
-			changeWinding = !changeWinding;
+			changeWinding = !changeWinding; 
 		}
 
 		float identity[16];
@@ -1133,6 +1571,8 @@ int main(int _argc, const char* _argv[])
 	bool hasColor    = false;
 	bool hasNormal   = false;
 	bool hasTexcoord = false;
+	bool hasJoint = false;
+	bool hasWeight = false;
 
 	{
 		for (TriangleArray::iterator it = mesh.m_triangles.begin(), itEnd = mesh.m_triangles.end(); it != itEnd && !hasTexcoord; ++it)
@@ -1148,6 +1588,22 @@ int main(int _argc, const char* _argv[])
 			for (uint32_t i = 0; i < 3; ++i)
 			{
 				hasNormal |= -1 != it->m_index[i].m_normal;
+			}
+		}
+
+		for (TriangleArray::iterator it = mesh.m_triangles.begin(), itEnd = mesh.m_triangles.end(); it != itEnd && !hasJoint; ++it)
+		{
+			for (uint32_t i = 0; i < 3; ++i)
+			{
+				hasJoint |= -1 != it->m_index[i].m_joint;
+			}
+		}
+
+		for (TriangleArray::iterator it = mesh.m_triangles.begin(), itEnd = mesh.m_triangles.end(); it != itEnd && !hasWeight; ++it)
+		{
+			for (uint32_t i = 0; i < 3; ++i)
+			{
+				hasWeight |= -1 != it->m_index[i].m_weight;
 			}
 		}
 
@@ -1214,6 +1670,17 @@ int main(int _argc, const char* _argv[])
 		}
 	}
 
+	if (hasJoint)
+	{
+		layout.add(bgfx::Attrib::Indices, 4, bgfx::AttribType::Uint8);
+	}
+
+	if (hasWeight)
+	{
+		BX_ASSERT(hasJoint, "You must provide the joint data");
+		layout.add(bgfx::Attrib::Weight, 4, bgfx::AttribType::Float);
+	}
+
 	layout.end();
 
 	uint32_t stride = layout.getStride();
@@ -1251,6 +1718,7 @@ int main(int _argc, const char* _argv[])
 
 	uint32_t positionOffset = layout.getOffset(bgfx::Attrib::Position);
 	uint32_t color0Offset   = layout.getOffset(bgfx::Attrib::Color0);
+	uint32_t jointOffset = layout.getOffset(bgfx::Attrib::Indices);
 
 	Group sentinelGroup;
 	sentinelGroup.m_startTriangle = 0;
@@ -1380,6 +1848,21 @@ int main(int _argc, const char* _argv[])
 					bgfx::vertexPack(normal, true, bgfx::Attrib::Normal, layout, vertices);
 				}
 
+				if (hasJoint)
+				{
+					BX_ASSERT(index.m_joint != -1, "Invalid joint data");
+					uint32_t* joint = (uint32_t*)(vertices + jointOffset);
+					bx::memCopy(joint, &mesh.m_joints[index.m_joint], 4 * sizeof(uint8_t));
+				}
+
+				if (hasWeight)
+				{
+					BX_ASSERT(index.m_weight != -1, "Invalid weight data");
+					float weights[4];
+					bx::memCopy(weights, &mesh.m_weights[index.m_weight], 4 * sizeof(float));
+					bgfx::vertexPack(weights, true, bgfx::Attrib::Weight, layout, vertices);
+				}
+
 				uint32_t hash = bx::hash<bx::HashMurmur2A>(vertices, stride);
 				size_t bucket = hash & hashmod;
 				uint32_t vertexIndex = UINT32_MAX;
@@ -1435,6 +1918,45 @@ int main(int _argc, const char* _argv[])
 	}
 
 	BX_ASSERT(0 == primitives.size(), "Not all primitives are written");
+
+	{
+		// Joints
+		write(&writer, kChunkJointBuffer, &err);
+
+		uint16_t num = (uint16_t)mesh.m_skinSkeleton.m_joints.size();
+		write(&writer, num, &err);
+
+		write(&writer, (const void*)mesh.m_skinSkeleton.m_inverseBindMatrixForJoint.data(),
+			num * 16 * sizeof(float), &err);
+
+		write(&writer, (const void*)mesh.m_skinSkeleton.m_joints.data(),
+			num * sizeof(Joint), &err);
+	}
+
+	{
+		// Animations
+		write(&writer, kChunkAnimationBuffer, &err);
+
+		// KeyFrames
+		uint32_t num = (uint16_t)mesh.m_animation.m_keyframes.size();
+		write(&writer, num, &err);
+
+		write(&writer, (const void*)&mesh.m_animation.m_maxKeyFrame, sizeof(float), &err);
+
+		write(&writer, (const void*)mesh.m_animation.m_keyframes.data(), num* sizeof(float), &err);
+
+		// Values
+		num = (uint32_t)mesh.m_animation.m_values.size();
+		write(&writer, num, &err);
+
+		write(&writer, (const void*)mesh.m_animation.m_values.data(), num* sizeof(float), &err);
+
+		// Channels
+		num = (uint32_t)mesh.m_animation.m_channels.size();
+		write(&writer, num, &err);
+
+		write(&writer, (const void*)mesh.m_animation.m_channels.data(), num* sizeof(Channel), &err);
+	}
 
 	bx::printf("size: %d\n", uint32_t(bx::seek(&writer) ) );
 	bx::close(&writer);
