@@ -60,6 +60,8 @@ namespace trybgfx
 		tinystl::string m_material;
 
 		bx::Aabb m_aabb;
+
+		bool m_isStatic;
 	};
 
 	typedef tinystl::vector<TGroup> TGroupArray;
@@ -162,6 +164,8 @@ namespace trybgfx
 		TAnimator(TMesh* _mesh);
 
 		void update(float _dt);
+		void destroy();
+
 		void play(int32_t _idx);
 		void playNext();
 		void playPre();

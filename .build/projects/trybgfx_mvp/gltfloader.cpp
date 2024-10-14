@@ -94,6 +94,7 @@ namespace trybgfx
 				cgltf_primitive* primitive = &mesh->primitives[primitiveIndex];
 				cgltf_size numVertex = primitive->attributes[0].data->count;
 
+				bool hasJoint = false;
 				for (cgltf_size attributeIndex = 0;
 					attributeIndex < primitive->attributes_count; ++attributeIndex)
 				{
@@ -157,6 +158,7 @@ namespace trybgfx
 						case cgltf_component_type_r_8u:
 						{
 							// JOINT, ...
+							hasJoint = true;
 							cgltf_size floatCount = cgltf_accessor_unpack_floats(accessor, NULL, 0);
 							float* accessorData = (float*)malloc(floatCount * sizeof(float));
 							cgltf_accessor_unpack_floats(accessor, accessorData, floatCount);
@@ -217,7 +219,7 @@ namespace trybgfx
 					}
 				}
 
-				// Now only process PBR metallic material
+				// TODO: right now this programe can only process PBR metallic material
 				if (primitive->material != NULL && primitive->material->has_pbr_metallic_roughness)
 				{
 					cgltf_pbr_metallic_roughness& pbrMetallicRoughness =
@@ -231,6 +233,8 @@ namespace trybgfx
 				}
 
 				{
+					_group->m_isStatic = !hasJoint;
+
 					_group->m_layout
 						.begin()
 						.add(bgfx::Attrib::Position, 3, bgfx::AttribType::Float)
@@ -251,15 +255,18 @@ namespace trybgfx
 						_group->m_vertices[i].m_u = texcoords[i].x;
 						_group->m_vertices[i].m_v = texcoords[i].y;
 
-						_group->m_vertices[i].m_idx0 = jointIndices[i].x;
-						_group->m_vertices[i].m_idx1 = jointIndices[i].y;
-						_group->m_vertices[i].m_idx2 = jointIndices[i].z;
-						_group->m_vertices[i].m_idx3 = jointIndices[i].w;
+						if (hasJoint)
+						{
+							_group->m_vertices[i].m_idx0 = jointIndices[i].x;
+							_group->m_vertices[i].m_idx1 = jointIndices[i].y;
+							_group->m_vertices[i].m_idx2 = jointIndices[i].z;
+							_group->m_vertices[i].m_idx3 = jointIndices[i].w;
 
-						_group->m_vertices[i].m_w0 = weights[i].x;
-						_group->m_vertices[i].m_w1 = weights[i].y;
-						_group->m_vertices[i].m_w2 = weights[i].z;
-						_group->m_vertices[i].m_w3 = weights[i].w;
+							_group->m_vertices[i].m_w0 = weights[i].x;
+							_group->m_vertices[i].m_w1 = weights[i].y;
+							_group->m_vertices[i].m_w2 = weights[i].z;
+							_group->m_vertices[i].m_w3 = weights[i].w;
+						}
 					}
 
 					_group->m_vbh = bgfx::createVertexBuffer(
@@ -580,10 +587,18 @@ namespace trybgfx
 
 	// --------------------------
 	TAnimator::TAnimator(TMesh* _mesh)
-		:m_mesh(_mesh), m_currentTime(0.0f), m_playing(false), m_currentIdx(0)
+		:m_mesh(_mesh), m_currentTime(0.0f), m_playing(false), m_currentIdx(0), m_currentAnimation(NULL)
 	{
 		//m_isPlayingUh.idx = bgfx::kInvalidHandle;
 		m_isPlayingUh = bgfx::createUniform("u_flgs", bgfx::UniformType::Vec4, 1);
+	}
+
+	void TAnimator::destroy()
+	{
+		if (bgfx::isValid(m_isPlayingUh))
+		{
+			bgfx::destroy(m_isPlayingUh);
+		}
 	}
 
 	void TAnimator::update(float _dt)
@@ -605,6 +620,11 @@ namespace trybgfx
 	void TAnimator::play(int32_t _idx)
 	{
 		//BX_ASSERT(idx < m_mesh->m_animations.size(), "Invalid animtion index");
+		if (m_mesh->m_animations.size() == 0)
+		{
+			return;
+		}
+
 		if (_idx < 0)
 		{
 			m_currentIdx = 0;
@@ -612,6 +632,10 @@ namespace trybgfx
 		else if (_idx >= m_mesh->m_animations.size())
 		{
 			m_currentIdx = m_mesh->m_animations.size() - 1;
+		}
+		else if (_idx == m_currentIdx)
+		{
+			return;
 		}
 		else
 		{
@@ -636,6 +660,11 @@ namespace trybgfx
 
 	void TAnimator::stop()
 	{
+		if (m_mesh->m_animations.size() == 0)
+		{
+			return;
+		}
+
 		m_playing = false;
 
 		float flgs[4];
@@ -647,11 +676,15 @@ namespace trybgfx
 	{
 		m_currentTime += _dt;
 		float animationTime = fmod(m_currentTime, m_currentAnimation->m_duration);
-
-		if (animationTime < 0.034f)
+		if (animationTime < 0.0f)
 		{
-			return;
+			animationTime = 0.0f;
 		}
+
+		//if (animationTime < 0.034f)
+		//{
+		//	return;
+		//}
 
 		float translateArray[MAX_JOINTS * 3];
 		float rotateArray[MAX_JOINTS * 4];
@@ -764,7 +797,8 @@ namespace trybgfx
 	// --------------------------
 	TMesh::TMesh()
 	{
-		m_sampler.idx = bgfx::kInvalidHandle;
+		//m_sampler.idx = bgfx::kInvalidHandle;
+		m_sampler = bgfx::createUniform("s_texColor", bgfx::UniformType::Sampler);
 	}
 
 	void TMesh::load(const bx::FilePath& _filePath)
