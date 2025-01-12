@@ -16,6 +16,8 @@
 
 namespace trybgfx
 {
+	bgfx::UniformHandle TMesh::s_samplerUh = { bgfx::kInvalidHandle };
+
 	typedef tinystl::vector<bx::Vec3> Vec3Array;
 
 	struct Vec2
@@ -87,6 +89,25 @@ namespace trybgfx
 			Vec2Array texcoords;
 			IVec4Array jointIndices;
 			Vec4Array weights;
+
+			_mesh->m_originScale.x = _node->scale[0];
+			_mesh->m_originScale.y = _node->scale[1];
+			_mesh->m_originScale.z = _node->scale[2];
+
+			_mesh->m_originPosition.x = _node->translation[0];
+			_mesh->m_originPosition.y = _node->translation[1];
+			_mesh->m_originPosition.z = -_node->translation[2];
+
+			bx::Quaternion rotation = {
+				 _node->rotation[0],
+				 _node->rotation[1],
+				 -_node->rotation[2],
+				 _node->rotation[3]
+			};
+			bx::Vec3 tmpRotation = bx::toEuler(rotation);
+			_mesh->m_originRotation.x = tmpRotation.x;
+			_mesh->m_originRotation.y = tmpRotation.y;
+			_mesh->m_originRotation.z = tmpRotation.z;
 
 			for (cgltf_size primitiveIndex = 0;
 				primitiveIndex < mesh->primitives_count; ++primitiveIndex)
@@ -228,7 +249,12 @@ namespace trybgfx
 					cgltf_texture* texture = pbrMetallicRoughness.base_color_texture.texture;
 					if (texture != NULL)
 					{
-						_group->m_material = pbrMetallicRoughness.base_color_texture.texture->image->uri;
+						_group->m_material.m_baseColorTexture = pbrMetallicRoughness.base_color_texture.texture->image->uri;
+					}
+
+					for (int i = 0; i < 4; i++)
+					{
+						_group->m_material.m_baseColorFactor[i] = pbrMetallicRoughness.base_color_factor[i];
 					}
 				}
 
@@ -277,18 +303,19 @@ namespace trybgfx
 
 					bx::toAabb(_group->m_aabb, _group->m_vertices, numVertex, sizeof(Vertex));
 
-					if (_group->m_material.size() > 0)
+					if (_group->m_material.m_baseColorTexture.size() > 0)
 					{
-						TextureMap::iterator it = _mesh->m_textureMap.find(_group->m_material);
+						tinystl::string& baseColorTexture = _group->m_material.m_baseColorTexture;
+						TextureMap::iterator it = _mesh->m_textureMap.find(baseColorTexture);
 						if (it == _mesh->m_textureMap.end())
 						{
 							tinystl::string texturePath;
 							texturePath.append("assets/");
-							texturePath.append(_group->m_material.c_str());
+							texturePath.append(_group->m_material.m_baseColorTexture.c_str());
 							texturePath.append(".dds");
-							bgfx::TextureHandle texture = loadTexture(texturePath.c_str());
+							bgfx::TextureHandle textureH = loadTexture(texturePath.c_str());
 
-							_mesh->m_textureMap.insert(tinystl::make_pair(_group->m_material, texture));
+							_mesh->m_textureMap.insert(tinystl::make_pair(baseColorTexture, textureH));
 						}
 					}
 				}
@@ -589,16 +616,6 @@ namespace trybgfx
 	TAnimator::TAnimator(TMesh* _mesh)
 		:m_mesh(_mesh), m_currentTime(0.0f), m_playing(false), m_currentIdx(0), m_currentAnimation(NULL)
 	{
-		//m_isPlayingUh.idx = bgfx::kInvalidHandle;
-		m_isPlayingUh = bgfx::createUniform("u_flgs", bgfx::UniformType::Vec4, 1);
-	}
-
-	void TAnimator::destroy()
-	{
-		if (bgfx::isValid(m_isPlayingUh))
-		{
-			bgfx::destroy(m_isPlayingUh);
-		}
 	}
 
 	void TAnimator::update(float _dt)
@@ -612,9 +629,9 @@ namespace trybgfx
 		step(_dt);
 		m_mesh->m_skinSkeleton.update();
 
-		float flgs[4];
-		flgs[0] = 2.0f;
-		bgfx::setUniform(m_isPlayingUh, flgs, 1);
+		//float flgs[4];
+		//flgs[0] = 2.0f;
+		//bgfx::setUniform(m_flagsUh, flgs, 1);
 	}
 
 	void TAnimator::play(int32_t _idx)
@@ -646,6 +663,9 @@ namespace trybgfx
 
 		m_currentTime = 0.0f;
 		m_playing = true;
+
+		ShaderFlags& flags = ShaderFlags::getInstance();
+		flags.m_isAniamtionPlaying = true;
 	}
 
 	void TAnimator::playNext()
@@ -667,9 +687,12 @@ namespace trybgfx
 
 		m_playing = false;
 
-		float flgs[4];
-		flgs[0] = -2.0f;
-		bgfx::setUniform(m_isPlayingUh, flgs, 1);
+		//float flgs[4];
+		//flgs[0] = -2.0f;
+		//bgfx::setUniform(m_flagsUh, flgs, 1);
+
+		ShaderFlags& flags = ShaderFlags::getInstance();
+		flags.m_isAniamtionPlaying = false;
 	}
 
 	void TAnimator::step(float _dt)
@@ -798,7 +821,10 @@ namespace trybgfx
 	TMesh::TMesh()
 	{
 		//m_sampler.idx = bgfx::kInvalidHandle;
-		m_sampler = bgfx::createUniform("s_texColor", bgfx::UniformType::Sampler);
+		if (!bgfx::isValid(TMesh::s_samplerUh))
+		{
+			TMesh::s_samplerUh = bgfx::createUniform("s_texColor", bgfx::UniformType::Sampler);
+		}
 	}
 
 	void TMesh::load(const bx::FilePath& _filePath)
@@ -847,6 +873,42 @@ namespace trybgfx
 						processGltfNode(node, this, &group, data, &nodeJointIdxMap);
 					}
 				}
+
+				// calc aabb
+				this->m_aabb = m_groups[0].m_aabb;
+				for (TGroupArray::const_iterator it = m_groups.begin(), itEnd = m_groups.end();
+					it != itEnd; ++it)
+				{
+					const TGroup& group = *it;
+
+					if (group.m_aabb.max.x > this->m_aabb.max.x) {
+						this->m_aabb.max.x = group.m_aabb.max.x;
+					}
+
+					if (group.m_aabb.max.y > this->m_aabb.max.y) {
+						this->m_aabb.max.y = group.m_aabb.max.y;
+					}
+
+					if (group.m_aabb.max.z > this->m_aabb.max.z) {
+						this->m_aabb.max.z = group.m_aabb.max.z;
+					}
+
+					if (group.m_aabb.min.x < this->m_aabb.min.x) {
+						this->m_aabb.min.x = group.m_aabb.min.x;
+					}
+
+					if (group.m_aabb.min.y < this->m_aabb.min.y) {
+						this->m_aabb.min.y = group.m_aabb.min.y;
+					}
+
+					if (group.m_aabb.min.z < this->m_aabb.min.z) {
+						this->m_aabb.min.z = group.m_aabb.min.z;
+					}
+				}
+
+				// calc capsule
+				m_capsuleRadius = bx::max<float>(m_aabb.max.x - m_aabb.min.x, m_aabb.max.z - m_aabb.min.z) / 2.0f;
+				m_capsuleHeight = (m_aabb.max.y - m_aabb.min.y) - 2 * m_capsuleRadius;
 
 				// animation
 				for (cgltf_size animationIndex = 0; animationIndex < data->animations_count; ++animationIndex)
@@ -970,10 +1032,10 @@ namespace trybgfx
 		}
 		m_textureMap.clear();
 
-		if (bgfx::isValid(m_sampler))
-		{
-			bgfx::destroy(m_sampler);
-		}
+		//if (bgfx::isValid(m_sampler))
+		//{
+		//	bgfx::destroy(m_sampler);
+		//}
 
 		m_skinSkeleton.destroy();
 	}
@@ -996,6 +1058,8 @@ namespace trybgfx
 		bgfx::setTransform(_mtx);
 		bgfx::setState(_state);
 
+		ShaderFlags& flags = ShaderFlags::getInstance();
+
 		for (TGroupArray::const_iterator it = m_groups.begin(), itEnd = m_groups.end();
 			it != itEnd; ++it)
 		{
@@ -1003,12 +1067,20 @@ namespace trybgfx
 			bgfx::setIndexBuffer(group.m_ibh);
 			bgfx::setVertexBuffer(0, group.m_vbh);
 
-			TextureMap::const_iterator tmIt = m_textureMap.find(group.m_material);
+			TextureMap::const_iterator tmIt = m_textureMap.find(group.m_material.m_baseColorTexture);
 			if (tmIt != m_textureMap.end())
 			{
 				bgfx::TextureHandle txh = tmIt->second;
-				bgfx::setTexture(0, m_sampler, txh);
+				bgfx::setTexture(0, TMesh::s_samplerUh, txh);
+
+				flags.m_hasTexture = true;
 			}
+			else
+			{
+				flags.m_hasTexture = false;
+			}
+
+			flags.update();
 
 			bgfx::submit(_id, _pg, 0, BGFX_DISCARD_INDEX_BUFFER | BGFX_DISCARD_VERTEX_STREAMS);
 
@@ -1025,6 +1097,27 @@ namespace trybgfx
 		}
 
 		bgfx::discard();
+	}
+
+
+	bx::Capsule& TMesh::getCapsule(bx::Vec3& position)
+	{
+		bx::Capsule res = {
+			{position.x, position.y + m_capsuleRadius, position.z },
+			{position.x, position.y + m_capsuleRadius + m_capsuleHeight, position.z },
+			m_capsuleRadius
+		};
+		return res;
+	}
+
+
+	bx::Sphere& TMesh::getSphere(bx::Vec3& position)
+	{
+		bx::Sphere res = {
+			{position.x, position.y + m_capsuleRadius, position.z },
+			m_capsuleRadius
+		};
+		return res;
 	}
 
 	// --------------------------

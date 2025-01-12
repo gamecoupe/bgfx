@@ -76,7 +76,7 @@ namespace trybgfx
 			m_up.y = 1.0f;
 			m_up.z = 0.0f;
 
-			m_fov = 60.0f;
+			m_fov = 90.0f;
 			m_nearClip = 0.1f;
 			m_farClip = 1000.0f;
 

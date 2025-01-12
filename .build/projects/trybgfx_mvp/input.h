@@ -544,7 +544,7 @@ public:
 
 	inline const bool isButtonWorkPress(tinystl::string _work)
 	{
-		return m_workToButtonResult[_work] & KeyStatus::Free;
+		return m_workToButtonResult[_work] & KeyStatus::Press;
 	}
 
 	inline const bool isButtonWorkHold(tinystl::string _work)
@@ -559,7 +559,8 @@ public:
 
 	inline const AxisStatus getAxisStatus(tinystl::string _work)
 	{
-		return m_workToAxisResult[_work];
+		AxisStatus res = m_workToAxisResult[_work];
+		return res;
 	}
 
 
@@ -619,7 +620,6 @@ class KeyboadInputFormat :public InputButtonFormatBase<char>
 public:
 	KeyboadInputFormat()
 	{
-		// キーを登録
 		addButton("A", 'A');
 		addButton("B", 'B');
 		addButton("C", 'C');
@@ -676,7 +676,7 @@ public:
 		m_fixCursorPos = cursorPos;
 
 		//addKey("Mouse");
-		addAxis("Mouse", 0);
+		addAxis("Cursor", 0);
 	}
 	const AxisStatus checkAxisState(char) override
 	{

@@ -41,6 +41,13 @@ namespace trybgfx
 		float m_w3;
 	};
 
+	struct TMaterial
+	{
+		float m_baseColorFactor[4];
+
+		tinystl::string m_baseColorTexture;
+	};
+
 	struct TGroup
 	{
 		TGroup();
@@ -57,7 +64,7 @@ namespace trybgfx
 		uint32_t m_numIndices;
 		uint16_t* m_indices;
 
-		tinystl::string m_material;
+		TMaterial m_material;
 
 		bx::Aabb m_aabb;
 
@@ -146,16 +153,30 @@ namespace trybgfx
 		void submit(bgfx::ViewId _id, bgfx::ProgramHandle _pg, const float* _mtx,
 			uint64_t _state, DebugDrawEncoder* _dde=NULL);
 
+		bx::Capsule& getCapsule(bx::Vec3& position);
+		bx::Sphere& getSphere(bx::Vec3& position);
+
+		bx::Vec3 m_originPosition = { 0.0f, 0.0f, 0.0f };
+		bx::Vec3 m_originRotation = { 0.0f, 0.0f, 0.0f };
+		bx::Vec3 m_originScale = { 0.0f, 0.0f, 0.0f };
+
 		// mesh
 		TGroupArray m_groups;
 
 		// texture
 		TextureMap m_textureMap;
-		bgfx::UniformHandle m_sampler;
 
 		// skeleton animtion
 		TSkinSkeleton m_skinSkeleton;
 		TAnimationArray m_animations;
+
+		static bgfx::UniformHandle s_samplerUh;
+		//static bgfx::UniformHandle s_flagUh;
+
+		bx::Aabb m_aabb;
+
+		float m_capsuleRadius;
+		float m_capsuleHeight;
 	};
 
 	struct TAnimator
@@ -164,7 +185,6 @@ namespace trybgfx
 		TAnimator(TMesh* _mesh);
 
 		void update(float _dt);
-		void destroy();
 
 		void play(int32_t _idx);
 		void playNext();
@@ -182,7 +202,63 @@ namespace trybgfx
 
 		int32_t m_currentIdx;
 
-		bgfx::UniformHandle m_isPlayingUh;
+		//bgfx::UniformHandle m_flagsUh;
+		//float m_shaderFlags[4];
+	};
+
+
+	struct ShaderFlags
+	{
+		static ShaderFlags& getInstance() {
+			static ShaderFlags inst;
+			return inst;
+		}
+
+		ShaderFlags(const ShaderFlags&) = delete;
+		ShaderFlags& operator=(const ShaderFlags&) = delete;
+
+		void init()
+		{
+			if (!bgfx::isValid(m_flagUh))
+			{
+				m_flagUh = bgfx::createUniform("u_flgs", bgfx::UniformType::Vec4, 1);
+			}
+		}
+
+		void update()
+		{
+			float shaderFlgs[4] = { 0.0f };
+			shaderFlgs[0] = covertBool2Float(m_isAniamtionPlaying);
+			shaderFlgs[1] = covertBool2Float(m_hasTexture);
+
+			bgfx::setUniform(m_flagUh, shaderFlgs, 1);
+		}
+
+		void destroy()
+		{
+			if (bgfx::isValid(m_flagUh))
+			{
+				bgfx::destroy(m_flagUh);
+			}
+		}
+
+		//
+		bool m_isAniamtionPlaying;
+		bool m_hasTexture;
+
+
+	private:
+		ShaderFlags()
+		{
+			m_flagUh = { bgfx::kInvalidHandle };
+		}
+
+		inline float covertBool2Float(bool value)
+		{
+			return value ? 2.0f : 0.0f;
+		}
+
+		bgfx::UniformHandle m_flagUh;
 	};
 
 	TMesh* loadGltf(const bx::FilePath& _filePath);

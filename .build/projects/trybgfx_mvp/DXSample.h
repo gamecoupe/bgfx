@@ -10,6 +10,10 @@
 
 #include "input.h"
 
+#include "Physics.h"
+
+#include "actorRepository.h"
+
 #include <windows.h>
 
 class DXSample
@@ -21,10 +25,6 @@ public:
     virtual void OnInit(HWND hwnd);
     virtual void OnUpdate();
     virtual void OnDestroy();
-
-    // Samples override the event handlers to handle specific messages.
-	virtual void OnKeyDown(uint8_t /*key*/);
-	virtual void OnKeyUp(uint8_t /*key*/);
 
 	virtual void HandleInput();
 
@@ -46,7 +46,8 @@ protected:
 	//bgfx::UniformHandle m_texColorUh;
 
 	trybgfx::TMesh* m_charactorMesh;
-	trybgfx::TMesh* m_levelMesh;
+	trybgfx::TMesh* m_tmplevelMesh;
+	trybgfx::TStaticActorRepository m_levelRepository;
 
 	trybgfx::TAnimator* m_animator;
 
@@ -69,13 +70,20 @@ protected:
 	float m_cameraTransformInv[16];
 	float m_charactorTransform[16];
 
-	bx::Vec3 m_charactorPosition = { 5.0f, 0.0f, 5.0f };
+	//bx::Vec3 m_charactorPosition = { 5.0f, 0.0f, 5.0f };
+	bx::Vec3 m_charactorPosition = { 0.0f, 140.0f, 0.0f };
 	bx::Vec3 m_charactorRotation = { 0.0f, 0.0f, 0.0f };
+
+	bx::Vec3 m_charactorVelocity = { 0.0f, 0.0f, 0.0f };
+
+	float m_characterScale = 0.1f;
 
 	bool m_init = false;
 	int32_t m_nextPaly;
 
 	Input m_input;
+
+	trybgfx::TPhysics* m_physics;
 
 	void UpdateCamera();
 };
